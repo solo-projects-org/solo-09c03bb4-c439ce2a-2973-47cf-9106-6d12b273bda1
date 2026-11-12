@@ -1,0 +1,8 @@
+# 换版成功演示：叠加在默认 compose 之上，部署 v2（外壳完整可用）
+#   docker compose -f docker-compose.yml -f docker-compose.v2.yml up -d --build
+services:
+  web:
+    environment:
+      APP_VERSION: "2"
+      SHELL_FAIL_PATHS: ""
+      SHELL_FAIL_RATE: "0"

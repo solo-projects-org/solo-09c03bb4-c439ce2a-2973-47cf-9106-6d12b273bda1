@@ -4,13 +4,22 @@
 - /records     清障队查看页：只展示已确认入库的记录
 - /api/records GET 列表 / POST 补传（uuid 幂等，同一笔只入库一次）
 - /photos/...  已入库的原照
+- /sw.js       Service Worker（按 APP_VERSION 渲染，版本与页面同源）
+
+换版/故障演示开关（均通过环境变量，不改业务代码）：
+- APP_VERSION          当前部署版本号，注入页面与 SW 缓存名
+- SHELL_FAIL_PATHS     逗号分隔的路径，命中即返回 503（例：/static/app.js），
+                       用来模拟“下载途中服务换版 / 文件没取齐”
+- SHELL_FAIL_RATE      外壳请求随机 503 的概率（0~1，默认 0）
 """
 import os
+import random
 import sqlite3
 import uuid as uuidlib
 from datetime import datetime, timezone
 
-from flask import Flask, g, jsonify, render_template, request, send_from_directory
+from flask import (Flask, Response, g, jsonify, render_template, request,
+                   send_from_directory)
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +27,25 @@ DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
 DB_PATH = os.path.join(DATA_DIR, "records.db")
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+
+# 当前部署版本：页面徽标与 SW 缓存名共用，换版时由部署环境覆盖
+APP_VERSION = os.environ.get("APP_VERSION", "1").strip() or "1"
+# 演示用故障注入：命中这些外壳路径直接 503
+SHELL_FAIL_PATHS = {
+    p.strip() for p in os.environ.get("SHELL_FAIL_PATHS", "").split(",") if p.strip()
+}
+try:
+    SHELL_FAIL_RATE = min(1.0, max(0.0, float(os.environ.get("SHELL_FAIL_RATE", "0"))))
+except ValueError:
+    SHELL_FAIL_RATE = 0.0
+
+# 受故障注入影响的“外壳”路径（与 SW 的 SHELL 清单一致）
+SHELL_PATHS = {
+    "/",
+    "/static/app.js",
+    "/static/style.css",
+    "/static/sample-photo.png",
+}
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024  # 原照最大 30MB
@@ -61,28 +89,66 @@ def close_db(_exc):
 
 
 @app.after_request
-def no_store_html(resp):
-    # HTML 页面不做 HTTP 缓存，保证在线时拿到最新数据；
-    # 离线可用性由 Service Worker 的 Cache Storage 负责。
+def cache_headers(resp):
+    # HTML 页面不做 HTTP 缓存，在线刷新可探测新版本；离线可用性由 SW 负责
     if resp.mimetype == "text/html":
         resp.headers["Cache-Control"] = "no-store"
+    elif request.path.startswith("/static/"):
+        # 静态资源：允许浏览器缓存但必须每次回源校验，配合版本化 SW 缓存避免混版
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+@app.before_request
+def inject_shell_failure():
+    """模拟换版途中的 503：仅作用于外壳资源，不影响补传 API 与已入库照片。"""
+    path = request.path
+    if request.method != "GET" or path not in SHELL_PATHS:
+        return None
+    if path in SHELL_FAIL_PATHS or (
+        SHELL_FAIL_RATE > 0 and random.random() < SHELL_FAIL_RATE
+    ):
+        return Response(
+            "Service Unavailable (simulated deploy failure on %s)" % path,
+            status=503,
+            mimetype="text/plain",
+        )
+    return None
 
 
 # ---------------- 页面 ----------------
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", app_version=APP_VERSION)
 
 
 @app.route("/sw.js")
 def service_worker():
-    # Service Worker 必须挂在根作用域下：从 / 路径提供，控制整个站点
-    resp = send_from_directory(os.path.join(BASE_DIR, "static"), "sw.js",
-                               mimetype="application/javascript")
+    # SW 模板渲染：APP_VERSION 决定缓存名；SW 本身不注入故障，
+    # 保证浏览器始终能完成“探测新版本”这一步，失败只发生在外壳下载阶段。
+    resp = Response(
+        render_template("sw.js", app_version=APP_VERSION),
+        mimetype="application/javascript",
+    )
+    # 每次都回源校验，确保浏览器能及时发现新版 SW
     resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+@app.route("/version")
+def version_info():
+    """演示辅助：查看当前服务版本与故障开关（不进 SW 缓存清单）。"""
+    return jsonify({
+        "app_version": APP_VERSION,
+        "shell_fail_paths": sorted(SHELL_FAIL_PATHS),
+        "shell_fail_rate": SHELL_FAIL_RATE,
+    })
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True})
 
 
 @app.route("/records")
@@ -90,7 +156,7 @@ def records_page():
     rows = get_db().execute(
         "SELECT * FROM records ORDER BY id DESC"
     ).fetchall()
-    return render_template("records.html", records=rows)
+    return render_template("records.html", records=rows, app_version=APP_VERSION)
 
 
 # ---------------- API ----------------

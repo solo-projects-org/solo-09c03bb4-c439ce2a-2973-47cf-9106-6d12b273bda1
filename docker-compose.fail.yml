@@ -1,0 +1,13 @@
+# 换版失败演示：部署 v2 但外壳有文件取不到（返回 503）。
+# SW 安装期整包校验失败，浏览器继续使用 v1 的完整副本，采集不中断。
+#   docker compose -f docker-compose.yml -f docker-compose.fail.yml up -d --build
+#
+# 两种故障模式任选（可同时给）：
+#   SHELL_FAIL_PATHS=/static/app.js   指定文件稳定 503（“文件没取齐”）
+#   SHELL_FAIL_RATE=0.5               外壳每个请求 50% 概率 503（“下载途中换版”）
+services:
+  web:
+    environment:
+      APP_VERSION: "2"
+      SHELL_FAIL_PATHS: "/static/app.js"
+      SHELL_FAIL_RATE: "0"

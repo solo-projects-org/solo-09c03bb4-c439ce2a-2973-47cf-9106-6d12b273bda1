@@ -11,7 +11,14 @@
 <header>
   <h1>🌲 林道巡护 · 倒木采集</h1>
   <p class="net-status" id="netStatus">检测网络中…</p>
+  <p class="version-badge">外壳版本 v{{ app_version }}（离线时为本机已保存的完整副本）</p>
 </header>
+
+<!-- 新版整包下载完整后才出现；下载失败/没取齐时不会出现，页面继续使用旧版 -->
+<div id="updateBar" class="update-bar" hidden>
+  <span>✅ 新版采集页已完整下载，刷新后启用（当前仍可用旧版正常采集）。</span>
+  <button type="button" id="updateBtn" class="btn update-btn">刷新启用新版</button>
+</div>
 
 <main>
   <section class="card">

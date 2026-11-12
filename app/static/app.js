@@ -1,10 +1,60 @@
 /* 林道巡护采集页逻辑：离线保存（IndexedDB）+ 回网补传（确认后才删除） */
 "use strict";
 
-/* ---------- Service Worker 注册（首次在线打开后，断网也能加载本页） ---------- */
+/* ---------- Service Worker 注册与整版本更新 ----------
+ * 规则：新版 SW 只有把同版本页面/脚本/样式/样照整套取齐才会安装成功；
+ * 安装成功后先进入 waiting，由用户在提示条上确认（或下次自然刷新）才接管，
+ * 因此不会出现“新 HTML + 旧脚本”的混版页面。 */
+let refreshing = false;
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js")   // 根路径脚本，默认作用域 "/"
-    .catch(err => console.error("SW 注册失败:", err));
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) =>
+      console.error("SW 注册失败:", err)
+    );
+  });
+
+  /* 新 SW 已完整安装、等待接管：提示用户刷新 */
+  navigator.serviceWorker.addEventListener("waiting", () => {
+    const bar = document.getElementById("updateBar");
+    if (bar) bar.hidden = false;
+  });
+
+  /* 兼容部分浏览器把已 waiting 的 worker 挂在 registration.waiting 上 */
+  navigator.serviceWorker.ready.then((reg) => {
+    if (reg.waiting) {
+      const bar = document.getElementById("updateBar");
+      if (bar) bar.hidden = false;
+    }
+    reg.addEventListener("updatefound", () => {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener("statechange", () => {
+        if (nw.state === "installed" && navigator.serviceWorker.controller) {
+          const bar = document.getElementById("updateBar");
+          if (bar) bar.hidden = false;
+        }
+      });
+    });
+  });
+
+  /* 新 SW 接管页面（activate 完成）：整页刷新，加载新版完整副本 */
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("updateBtn");
+    if (btn) {
+      btn.addEventListener("click", () => {
+        /* 通知 waiting 的新 SW 放行；其 activate 后触发 controllerchange 自动刷新 */
+        navigator.serviceWorker.ready.then((reg) => {
+          if (reg.waiting) reg.waiting.postMessage("SKIP_WAITING");
+        });
+      });
+    }
+  });
 }
 
 /* ---------- IndexedDB：待传记录仓库 ---------- */
@@ -52,7 +102,7 @@ async function idbDelete(uuid) {
 }
 
 /* ---------- 页面元素 ---------- */
-const $ = id => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 const latInput = $("lat"), lngInput = $("lng"), noteInput = $("note");
 const photoInput = $("photo"), preview = $("preview");
 const pendingList = $("pendingList"), pendingCount = $("pendingCount");
@@ -81,7 +131,7 @@ photoInput.addEventListener("change", () => {
   if (photoInput.files[0]) showPreview(photoInput.files[0]);
 });
 
-/* 使用随附样例照片（样例已被 Service Worker 缓存，离线也能取到） */
+/* 使用随附样例照片（样例与页面同版本、已由 SW 整包缓存，离线也能取到） */
 $("sampleBtn").addEventListener("click", async () => {
   try {
     const resp = await fetch("/static/sample-photo.png");
@@ -101,11 +151,11 @@ $("sampleBtn").addEventListener("click", async () => {
 $("geoBtn").addEventListener("click", () => {
   if (!navigator.geolocation) return alert("此浏览器不支持定位");
   navigator.geolocation.getCurrentPosition(
-    pos => {
+    (pos) => {
       latInput.value = pos.coords.latitude.toFixed(6);
       lngInput.value = pos.coords.longitude.toFixed(6);
     },
-    err => alert("定位失败：" + err.message),
+    (err) => alert("定位失败：" + err.message),
     { enableHighAccuracy: true, timeout: 10000 }
   );
 });
@@ -121,11 +171,11 @@ $("collectForm").addEventListener("submit", async () => {
   if (!file) return alert("请选择或拍摄现场照片");
 
   const rec = {
-    uuid: crypto.randomUUID(),          // 幂等键：重传同一笔只入库一次
+    uuid: crypto.randomUUID(), // 幂等键：重传同一笔只入库一次
     lat, lng,
     note: noteInput.value.trim(),
     createdAt: new Date().toISOString(),
-    photo: file,                        // File/Blob 可直接存入 IndexedDB
+    photo: file, // File/Blob 可直接存入 IndexedDB
     photoName: file.name || "photo.jpg",
   };
   await idbAdd(rec);
@@ -153,7 +203,7 @@ async function renderPending() {
     info.innerHTML =
       `<strong>${it.lat.toFixed(6)}, ${it.lng.toFixed(6)}</strong><br>` +
       `<small>${it.createdAt.slice(0, 19).replace("T", " ")}</small>` +
-      (it.note ? `<br>${it.note.replace(/[<>&]/g, c =>
+      (it.note ? `<br>${it.note.replace(/[<>&]/g, (c) =>
         ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}` : "");
     li.append(img, info);
     pendingList.appendChild(li);
@@ -161,7 +211,7 @@ async function renderPending() {
 }
 
 /* ---------- 补传：收到服务器确认才移出待传 ---------- */
-$("syncBtn").addEventListener("click", async () => {
+async function syncPending() {
   const items = await idbAll();
   if (!items.length) {
     syncStatus.textContent = "没有待传记录。";
@@ -199,6 +249,13 @@ $("syncBtn").addEventListener("click", async () => {
     `补传完成：新入库 ${ok} 笔` +
     (dup ? `，服务器已有 ${dup} 笔（未重复入库）` : "") +
     (fail ? `，失败 ${fail} 笔（仍保留在待传）` : "");
+}
+
+$("syncBtn").addEventListener("click", syncPending);
+
+/* 回网自动尝试补传一次（接口与手工补传完全相同），失败的记录仍保留 */
+window.addEventListener("online", () => {
+  syncPending();
 });
 
 /* ---------- 启动 ---------- */

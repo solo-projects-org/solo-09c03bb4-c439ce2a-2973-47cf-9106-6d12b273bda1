@@ -18,6 +18,33 @@ header h1 { font-size: 1.25rem; }
 .net-status.online  { color: #b9f6a5; }
 .net-status.offline { color: #ffd0a8; }
 
+.version-badge {
+  font-size: .75rem;
+  margin-top: 6px;
+  opacity: .85;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.update-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fff4d6;
+  border-bottom: 2px solid #e0b94e;
+  color: #6b5310;
+  padding: 10px 16px;
+  font-size: .9rem;
+}
+.update-btn {
+  width: auto;
+  margin: 0;
+  padding: 8px 16px;
+  background: #2d5a27;
+  color: #fff;
+  white-space: nowrap;
+}
+
 main { max-width: 720px; margin: 0 auto; padding: 16px; }
 
 .card {

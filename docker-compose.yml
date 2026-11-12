@@ -3,8 +3,20 @@ services:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      # 当前部署版本：页面徽标与 SW 版本化缓存名共用，换版时改这里
+      APP_VERSION: "1"
+      # 演示“换版失败”用，默认关闭。例：SHELL_FAIL_PATHS=/static/app.js
+      SHELL_FAIL_PATHS: ""
+      # 外壳随机 503 概率（0~1），用于模拟下载途中服务换版
+      SHELL_FAIL_RATE: "0"
     volumes:
       - patrol-data:/data   # SQLite 与已入库原照持久化
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
     restart: unless-stopped
 
 volumes:
